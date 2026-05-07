@@ -1,14 +1,17 @@
+import asyncio
 import logging
 import os
 import subprocess
 import tempfile
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, BufferedInputFile
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 logging.basicConfig(level=logging.INFO)
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
 
 
 def convert_to_video_note(input_path: str, output_path: str) -> bool:
@@ -26,55 +29,52 @@ def convert_to_video_note(input_path: str, output_path: str) -> bool:
     return result.returncode == 0
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+@dp.message(F.text == "/start")
+async def cmd_start(message: Message):
+    await message.answer(
         "👋 Привет! Отправь мне видео, и я пришлю его обратно в виде кружка 🔵\n\n"
-        "⚠️ Ограничения Telegram для кружков:\n"
+        "⚠️ Ограничения:\n"
         "• Максимум 60 секунд\n"
         "• Видео будет обрезано до квадрата"
     )
 
 
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Обрабатываю видео, подожди...")
+@dp.message(F.video | F.document)
+async def handle_video(message: Message):
+    await message.answer("⏳ Обрабатываю видео, подожди...")
 
-    if update.message.video:
-        file = await update.message.video.get_file()
-    else:
-        file = await update.message.document.get_file()
+    file_id = message.video.file_id if message.video else message.document.file_id
 
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = os.path.join(tmpdir, "input.mp4")
             output_path = os.path.join(tmpdir, "output.mp4")
 
-            await file.download_to_drive(input_path)
+            file = await bot.get_file(file_id)
+            await bot.download_file(file.file_path, destination=input_path)
 
-            success = convert_to_video_note(input_path, output_path)
-
-            if not success:
-                await update.message.reply_text("❌ Не удалось обработать видео. Попробуй другой формат.")
+            if not convert_to_video_note(input_path, output_path):
+                await message.answer("❌ Не удалось обработать видео.")
                 return
 
             with open(output_path, "rb") as f:
-                await update.message.reply_video_note(video_note=f, length=640)
-
+                await message.answer_video_note(
+                    video_note=BufferedInputFile(f.read(), filename="circle.mp4"),
+                    length=640
+                )
     except Exception as e:
         logging.error(f"Error: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        await message.answer(f"❌ Ошибка: {str(e)}")
 
 
-async def handle_other(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📹 Пожалуйста, отправь видео!")
+@dp.message()
+async def handle_other(message: Message):
+    await message.answer("📹 Отправь видео!")
 
 
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
-    app.add_handler(MessageHandler(filters.ALL, handle_other))
-    app.run_polling()
+async def main():
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
